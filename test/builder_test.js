@@ -149,7 +149,7 @@ describe('Builder', function() {
           expect(true).to.equal(false, 'should not succeed')
           done();
         }).catch(function(reason) {
-          expect(reason.message).to.contain('Build Canceled: Broccoli Builder ran into an error with')
+          expect(reason.message).to.contain('Build Canceled')
 
           return cleaner.then(function() {
             expect(tree.cleanupCount).to.equal(1)
