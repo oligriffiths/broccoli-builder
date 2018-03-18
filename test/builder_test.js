@@ -163,20 +163,30 @@ describe('Builder', function() {
   it('tree graph', function() {
     var parent = countingTree(function(readTree) {
       return readTree(child).then(function(dir) {
-        return new RSVP.Promise(function(resolve, reject) {
-          setTimeout(function() { resolve('parentTreeDir') }, 30)
+        return readTree(shared).then(function() {
+          return new RSVP.Promise(function(resolve, reject) {
+            setTimeout(function() { resolve('parentTreeDir') }, 30)
+          })
         })
       })
     }, 'parent')
 
     var child = countingTree(function(readTree) {
-      return readTree('srcDir').then(function(dir) {
+      return readTree(shared).then(function(dir) {
         return new RSVP.Promise(function(resolve, reject) {
           setTimeout(function() { resolve('childTreeDir') }, 20)
         })
       })
     }, 'child')
 
+    var shared = countingTree(function (readTree) {
+      return readTree('srcDir').then(function (dir) {
+        return new RSVP.Promise(function (resolve, reject) {
+          setTimeout(function() { resolve('sharedTreeDir') }, 20)
+        })
+      })
+    }, 'shared')
+  
     var timeEqual = function(a, b) {
       expect(a).to.be.a('number')
 
@@ -191,23 +201,25 @@ describe('Builder', function() {
     var builder = new Builder(parent)
     return builder.build().then(function(hash) {
       expect(hash.directory).to.equal('parentTreeDir')
-      var parentNode = hash.graph
-      expect(parentNode.directory).to.equal('parentTreeDir')
-      expect(parentNode.tree).to.equal(parent)
-      expect(parentNode.subtrees.length).to.equal(1)
-      var childNode = parentNode.subtrees[0]
-      expect(childNode.directory).to.equal('childTreeDir')
-      expect(childNode.tree).to.equal(child)
-      expect(childNode.subtrees.length).to.equal(1)
-      var leafNode = childNode.subtrees[0]
-      expect(leafNode.directory).to.equal('srcDir')
-      expect(leafNode.tree).to.equal('srcDir')
-      expect(leafNode.subtrees.length).to.equal(0)
+      var parentBroccoliNode = hash.graph
+      expect(parentBroccoliNode.directory).to.equal('parentTreeDir')
+      expect(parentBroccoliNode.tree).to.equal(parent)
+      expect(parentBroccoliNode.subtrees.length).to.equal(2)
+      var childBroccoliNode = parentBroccoliNode.subtrees[0]
+      expect(childBroccoliNode.directory).to.equal('childTreeDir')
+      expect(childBroccoliNode.tree).to.equal(child)
+      expect(childBroccoliNode.subtrees.length).to.equal(1)
+      var sharedBroccoliNode = childBroccoliNode.subtrees[0]
+      expect(sharedBroccoliNode.subtrees.length).to.equal(1)      
+      var leafBroccoliNode = sharedBroccoliNode.subtrees[0]
+      expect(leafBroccoliNode.directory).to.equal('srcDir')
+      expect(leafBroccoliNode.tree).to.equal('srcDir')
+      expect(leafBroccoliNode.subtrees.length).to.equal(0)
     })
 
     var json = heimdall.toJSON()
 
-    expect(json.nodes.length).to.equal(4)
+    expect(json.nodes.length).to.equal(6)
 
     var parentNode = json.nodes[1]
     timeEqual(parentNode.stats.time.self, 30e6)
@@ -222,7 +234,7 @@ describe('Builder', function() {
       delete json.nodes[i].stats.time.self
     }
     
-    expect(json).to.deep.equal(json, {
+    expect(json).to.deep.equal({
       nodes: [{
         _id: 0,
         id: {
@@ -238,17 +250,21 @@ describe('Builder', function() {
         id: {
           name: 'parent',
           broccoliNode: true,
+          broccoliId: 0,
+          broccoliCachedNode: false
         },
         stats: {
           own: {},
           time: {},
         },
-        children: [2],
+        children: [2, 5],
       }, {
         _id: 2,
         id: {
           name: 'child',
           broccoliNode: true,
+          broccoliId: 1,
+          broccoliCachedNode: false
         },
         stats: {
           own: {},
@@ -258,15 +274,44 @@ describe('Builder', function() {
       }, {
         _id: 3,
         id: {
+          name: 'shared',
+          broccoliNode: true,
+          broccoliId: 2,
+          broccoliCachedNode: false
+        },
+        stats: {
+          own: {},
+          time: {},
+        },
+        children: [4],
+      }, {
+        _id: 4,
+        id: {
           name: 'srcDir',
           broccoliNode: true,
+          broccoliId: 3,
+          broccoliCachedNode: false
         },
         stats: {
           own: {},
           time: {},
         },
         children: [],
-      }],
+      }, {
+        _id: 5,
+        id: {
+          name: 'shared',
+          broccoliNode: true,
+          broccoliId: 2,
+          broccoliCachedNode: true
+        },
+        stats: {
+          own: {},
+          time: {},
+        },
+        children: [],
+      }
+      ],
     })
   })
 
