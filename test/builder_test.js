@@ -280,4 +280,31 @@ describe('Builder', function() {
       expect(callbackCalled).to.be.ok
     })
   })
+
+  it('start/stop events', function (done) {
+    // Can be removed in 1.0.0
+    var builder = new Builder('fooDir')
+    var startWasCalled = 0;
+    var stopWasCalled = 0;
+    builder.on('start', function() {
+      startWasCalled++;
+    });
+
+    builder.on('end', function() {
+      stopWasCalled++;
+    });
+
+    expect(startWasCalled).to.equal(0);
+    expect(stopWasCalled).to.equal(0);
+
+    builder.build(function willReadStringTree (dir) {
+      expect(startWasCalled).to.equal(1);
+      expect(stopWasCalled).to.equal(0);
+      expect(dir).to.equal('fooDir')
+    }).finally(function() {
+      expect(startWasCalled).to.equal(1);
+      expect(stopWasCalled).to.equal(1);
+      done();
+    })
+  })
 })
