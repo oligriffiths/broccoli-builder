@@ -1,443 +1,579 @@
+'use strict'
+
+var fs = require('fs')
+var os = require('os')
+var path = require('path')
+var rimraf = require('rimraf')
+var RSVP = require('rsvp')
 var broccoli = require('..')
+var makePlugins = require('./plugins')
 var Builder = broccoli.Builder
+var fixturify = require('fixturify')
+var sinon = require('sinon')
 var chai = require('chai'), expect = chai.expect
 var chaiAsPromised = require('chai-as-promised'); chai.use(chaiAsPromised)
-var RSVP = require('rsvp')
-var heimdall = require('heimdalljs')
+var sinonChai = require('sinon-chai'); chai.use(sinonChai)
+var multidepPackages = require('multidep')('test/multidep.json')
+
+var Plugin = multidepPackages['broccoli-plugin']['1.2.0']()
+var broccoliSource = multidepPackages['broccoli-source']['1.1.0']()
+
+
 
 RSVP.on('error', function(error) {
   throw error
 })
 
-function countingTree (readFn, description) {
-  return {
-    read: function (readTree) {
-      this.readCount++
-      return readFn.call(this, readTree)
-    },
-    readCount: 0,
-    description: description,
-    cleanup: function () {
-      var self = this
+// Make a default set of plugins with the latest Plugin version. In some tests
+// we'll shadow this `plugins` variable with one created with different versions.
+var plugins = makePlugins(Plugin)
 
-      return RSVP.resolve()
-        .then(function() {
-          self.cleanupCount++
-        })
-    },
-    cleanupCount: 0
-  }
+function sleep() {
+  return new RSVP.Promise(function(resolve, reject) {
+    setTimeout(resolve, 10)
+  })
 }
 
+
+// Builder subclass that returns fixturify objects from .build()
+FixtureBuilder.prototype = Object.create(Builder.prototype)
+FixtureBuilder.prototype.constructor = FixtureBuilder
+function FixtureBuilder(/* ... */) {
+  Builder.apply(this, arguments)
+}
+
+FixtureBuilder.prototype.build = function() {
+  var self = this
+  return Builder.prototype.build.call(this).then(function() {
+    return fixturify.readSync(self.outputPath)
+  })
+}
+
+function buildToFixture(node) {
+  var fixtureBuilder = new FixtureBuilder(node)
+  return fixtureBuilder.build().finally(fixtureBuilder.cleanup.bind(fixtureBuilder))
+}
+
+
 describe('Builder', function() {
-  describe('core functionality', function() {
-    describe('build', function() {
-      it('passes through string tree', function() {
-        var builder = new Builder('someDir')
-        return expect(builder.build()).to.eventually.have.property('directory', 'someDir')
-      })
+  var builder
 
-      it('calls read on the given tree object', function() {
-        var builder = new Builder({
-          read: function(readTree) { return 'someDir' }
+  afterEach(function() {
+    if (builder) {
+      builder.cleanup()
+      builder = null
+    }
+  })
+
+  describe('broccoli-plugin nodes (nodeType: "transform")', function() {
+    multidepPackages['broccoli-plugin'].forEachVersion(function(version, Plugin) {
+      var plugins = makePlugins(Plugin)
+
+      describe('broccoli-plugin ' + version, function() {
+        it('builds a single node, repeatedly', function() {
+          var node = new plugins.VeggiesPlugin
+          var buildSpy = sinon.spy(node, 'build')
+          builder = new FixtureBuilder(node)
+          return expect(builder.build()).to.eventually.deep.equal({ 'veggies.txt': 'tasty' })
+            .then(function() {
+              return expect(builder.build()).to.eventually.deep.equal({ 'veggies.txt': 'tasty' })
+            })
+            .then(function() {
+              expect(buildSpy).to.have.been.calledTwice
+            })
         })
-        return expect(builder.build()).to.eventually.have.property('directory', 'someDir')
+
+        it('allows for asynchronous build', function() {
+          var asyncNode = new plugins.AsyncPlugin()
+          var outputNode = new plugins.MergePlugin([asyncNode])
+          var buildSpy = sinon.spy(outputNode, 'build')
+          builder = new Builder(outputNode)
+          var buildPromise = builder.build()
+          return asyncNode.buildStarted.then(sleep).then(function() {
+            expect(buildSpy).not.to.have.been.called
+            asyncNode.finishBuild()
+          }).then(function() {
+            return buildPromise
+          }).then(function() {
+            expect(buildSpy).to.have.been.called
+          })
+        })
+
+        it('builds nodes reachable through multiple paths only once', function() {
+          var src = new plugins.VeggiesPlugin
+          var buildSpy = sinon.spy(src, 'build')
+          var outputNode = new plugins.MergePlugin([src, src], { overwrite: true })
+          return expect(buildToFixture(outputNode)).to.eventually.deep.equal({
+            '0': { 'veggies.txt': 'tasty' },
+            '1': { 'veggies.txt': 'tasty' }
+          }).then(function() {
+            expect(buildSpy).to.have.been.calledOnce
+          })
+        })
+
+        it('supplies a cachePath', function() {
+          // inputPath and outputPath are tested implicitly by the other tests,
+          // but cachePath isn't, so we have this test case
+
+          CacheTestPlugin.prototype = Object.create(Plugin.prototype)
+          CacheTestPlugin.prototype.constructor = CacheTestPlugin
+          function CacheTestPlugin() {
+            Plugin.call(this, [])
+          }
+          CacheTestPlugin.prototype.build = function() {
+            expect(fs.existsSync(this.cachePath)).to.be.true
+          }
+
+          builder = new Builder(new CacheTestPlugin)
+          return builder.build()
+        })
       })
     })
 
-    it('readTree deduplicates', function() {
-      var subtree = new countingTree(function(readTree) { return 'foo' })
-      var builder = new Builder({
-        read: function(readTree) {
-          return readTree(subtree).then(function(hash) {
-            var dirPromise = readTree(subtree) // read subtree again
-            expect(dirPromise.then).to.be.a('function')
-            return dirPromise
-          })
+    describe('persistentOutput flag', function() {
+      multidepPackages['broccoli-plugin'].forEachVersion(function(version, Plugin) {
+        if (version === '1.0.0') return // continue
+
+        BuildOncePlugin.prototype = Object.create(Plugin.prototype)
+        BuildOncePlugin.prototype.constructor = BuildOncePlugin
+        function BuildOncePlugin(options) {
+          Plugin.call(this, [], options)
         }
-      })
-      return builder.build().then(function(hash) {
-        expect(hash.directory).to.equal('foo')
-        expect(subtree.readCount).to.equal(1)
-      })
-    })
 
-    describe('cleanup', function() {
-      it('is called on all trees called ever', function() {
-        var tree = countingTree(function(readTree) {
-          // Interesting edge case: Read subtree1 on the first read, subtree2 on
-          // the second
-          return readTree(this.readCount === 1 ? subtree1 : subtree2)
-        })
-        var subtree1 = countingTree(function(readTree) { return 'foo' })
-        var subtree2 = countingTree(function(readTree) { throw new Error('bar') })
-        var builder = new Builder(tree)
-        return builder.build().then(function(hash) {
-          expect(hash.directory).to.equal('foo')
-          builder.build().catch(function(err) {
-            expect(err.message).to.contain('Build Canceled: Broccoli Builder ran into an error with `undefined` plugin.')
-            return builder.cleanup()
+        BuildOncePlugin.prototype.build = function() {
+          if (!this.builtOnce) {
+            this.builtOnce = true
+            fs.writeFileSync(path.join(this.outputPath, 'foo.txt'), 'test')
+          }
+        }
+
+        function isPersistent(options) {
+          var builder = new FixtureBuilder(new BuildOncePlugin(options))
+          return builder.build()
+            .then(function() {
+              return builder.build()
+            }).then(function(obj) {
+              return obj['foo.txt'] === 'test'
+            }).finally(function() {
+              return builder.cleanup()
+            })
+        }
+
+        describe('broccoli-plugin ' + version, function() {
+          it('is not persistent by default', function() {
+            return expect(isPersistent({})).to.be.eventually.false
           })
-          .finally(function() {
-            expect(tree.cleanupCount).to.equal(1)
-            expect(subtree1.cleanupCount).to.equal(1)
-            expect(subtree2.cleanupCount).to.equal(1)
-          });
-        })
-      })
 
-      it('cannot build already cleanedup build', function (done) {
-        var tree = countingTree(function (readTree) {
-          // Interesting edge case: Read subtree1 on the first read, subtree2 on
-          // the second
-          return readTree(this.readCount === 1 ? subtree1 : subtree2)
-        })
-        var subtree1 = countingTree(function (readTree) { return 'foo' })
-        var subtree2 = countingTree(function (readTree) { throw new Error('bar') })
-        var builder = new Builder(tree)
-        builder.cleanup();
-        builder.build().then(function (hash) {
-          expect(false).to.equal(true, 'should not succeed');
-          done();
-        }).catch(function(e) {
-          expect(tree.cleanupCount).to.equal(0)
-          expect(subtree1.cleanupCount).to.equal(0)
-          expect(subtree2.cleanupCount).to.equal(0)
-          expect(e.message).to.equal('cannot build this builder, as it has been previously canceled');;
-          done();
-        });
-      })
-
-      it('a build step run once the build is cancelled will not wrong, and the build will fail', function (done) {
-        var tree = countingTree(function (readTree) {
-          // Interesting edge case: Read subtree1 on the first read, subtree2 on
-          // the second
-          return readTree(this.readCount === 1 ? subtree1 : subtree2)
-        })
-        var subtree1 = countingTree(function (readTree) { return 'foo' })
-        var subtree2 = countingTree(function (readTree) { throw new Error('bar') })
-        var builder = new Builder(tree)
-        var build = builder.build()
-        builder.cleanup();
-        build.then(function (hash) {
-          expect(false).to.equal(true, 'should not succeed');
-          done();
-        }).catch(function(reason) {
-          expect(tree.cleanupCount).to.equal(0)
-          expect(subtree1.cleanupCount).to.equal(0)
-          expect(subtree2.cleanupCount).to.equal(0)
-          expect(reason.message).to.equal('Build Canceled');
-          expect(reason.isSilentError).to.equal(true);;
-          done();
-        });
-      })
-
-      it('is calls trees so far read (after one step)', function (done) {
-        var cleaner;
-        var tree = countingTree(function (readTree) {
-          // Interesting edge case: Read subtree1 on the first read, subtree2 on
-          // the second
-          cleaner = builder.cleanup();
-          return readTree(subtree1);
-        })
-        var subtree1 = countingTree(function (readTree) {
-          return 'foo'
-        })
-        var builder = new Builder(tree)
-
-        builder.build().then(function () {
-          expect(true).to.equal(false, 'should not succeed')
-          done();
-        }).catch(function(reason) {
-          expect(reason.message).to.contain('Build Canceled')
-
-          return cleaner.then(function() {
-            expect(tree.cleanupCount).to.equal(1)
-            expect(subtree1.cleanupCount).to.equal(0) // never read the second, so we wont clean it up
-            done();
+          it('is persistent with persistentOutput: true', function() {
+            return expect(isPersistent({ persistentOutput: true })).to.be.eventually.true
           })
         })
       })
     })
   })
 
-  it('tree graph', function() {
-    var parent = countingTree(function(readTree) {
-      return readTree(child).then(function(dir) {
-        return readTree(shared).then(function() {
-          return new RSVP.Promise(function(resolve, reject) {
-            setTimeout(function() { resolve('parentTreeDir') }, 30)
-          })
+  describe('broccoli-source nodes (nodeType: "source") and strings', function() {
+    multidepPackages['broccoli-source'].forEachVersion(function(version, broccoliSource) {
+      describe('broccoli-source ' + version, function() {
+        it('records unwatched source directories', function() {
+          builder = new FixtureBuilder(new broccoliSource.UnwatchedDir('test/fixtures/basic'))
+          expect(builder.watchedPaths).to.deep.equal([])
+          expect(builder.unwatchedPaths).to.deep.equal(['test/fixtures/basic'])
+          return expect(builder.build())
+            .to.eventually.deep.equal({ 'foo.txt': 'OK' })
+        })
+
+        it('records watched source directories', function() {
+          builder = new FixtureBuilder(new broccoliSource.WatchedDir('test/fixtures/basic'))
+          expect(builder.watchedPaths).to.deep.equal(['test/fixtures/basic'])
+          expect(builder.unwatchedPaths).to.deep.equal([])
+          return expect(builder.build())
+            .to.eventually.deep.equal({ 'foo.txt': 'OK' })
         })
       })
-    }, 'parent')
+    })
 
-    var child = countingTree(function(readTree) {
-      return readTree(shared).then(function(dir) {
-        return new RSVP.Promise(function(resolve, reject) {
-          setTimeout(function() { resolve('childTreeDir') }, 20)
-        })
-      })
-    }, 'child')
+    it('records string (watched) source directories', function() {
+      builder = new FixtureBuilder('test/fixtures/basic')
+      expect(builder.watchedPaths).to.deep.equal(['test/fixtures/basic'])
+      expect(builder.unwatchedPaths).to.deep.equal([])
+      return expect(builder.build())
+        .to.eventually.deep.equal({ 'foo.txt': 'OK' })
+    })
 
-    var shared = countingTree(function (readTree) {
-      return readTree('srcDir').then(function (dir) {
-        return new RSVP.Promise(function (resolve, reject) {
-          setTimeout(function() { resolve('sharedTreeDir') }, 20)
-        })
-      })
-    }, 'shared')
-  
-    var timeEqual = function(a, b) {
-      expect(a).to.be.a('number')
+    it('records source directories only once', function() {
+      var src = 'test/fixtures/basic'
+      builder = new FixtureBuilder(new plugins.MergePlugin([src, src]))
+      expect(builder.watchedPaths).to.deep.equal(['test/fixtures/basic'])
+    })
 
-      // do not run timing assertions in Travis builds
-      // the actual results of process.hrtime() are not
-      // reliable
-      if (process.env.CI !== 'true') {
-        expect(a).to.be.within(b - 5e7, b + 5e7)
+    it('fails when a source directory doesn\'t exist', function() {
+      builder = new Builder(new broccoliSource.UnwatchedDir('test/fixtures/doesnotexist'))
+      return expect(builder.build()).to.be.eventually.rejectedWith(Builder.BuildError,
+        /test\/fixtures\/doesnotexist: ENOENT: no such file or directory/)
+    })
+
+    it('fails when a source directory is a file', function() {
+      builder = new Builder(new broccoliSource.UnwatchedDir('test/fixtures/basic/foo.txt'))
+      return expect(builder.build()).to.be.eventually.rejectedWith(Builder.BuildError,
+        /test\/fixtures\/basic\/foo\.txt: Not a directory/)
+    })
+  })
+
+  describe('error handling in constructor', function() {
+    it('detects cycles', function() {
+      // Cycles are quite hard to construct, so we make a special plugin
+      CyclicalPlugin.prototype = Object.create(Plugin.prototype)
+      CyclicalPlugin.prototype.constructor = CyclicalPlugin
+      function CyclicalPlugin() {
+        Plugin.call(this, [this]) // use `this` as input node
       }
+      CyclicalPlugin.prototype.build = function() { }
+
+      expect(function() {
+        new Builder(new CyclicalPlugin)
+      }).to.throw(Builder.BuilderError, 'Cycle in node graph: CyclicalPlugin -> CyclicalPlugin')
+    })
+
+    describe('invalid nodes', function() {
+      var invalidNode = { 'not a node': true }
+      var readBasedNode = { read: function() { }, cleanup: function() { }, description: 'an old node' }
+
+      it('catches invalid root nodes', function() {
+        expect(function() {
+          new Builder(invalidNode)
+        }).to.throw(Builder.InvalidNodeError, /Expected Broccoli node, got \[object Object\] as output node$/)
+      })
+
+      it('catches invalid input nodes', function() {
+        expect(function() {
+          new Builder(new plugins.MergePlugin([invalidNode], { annotation: 'some annotation' }))
+        }).to.throw(Builder.InvalidNodeError, /Expected Broccoli node, got \[object Object\]\nused as input node to MergePlugin \(some annotation\)\n-~- created here: -~-/)
+      })
+
+      it('catches undefined input nodes', function() {
+        // Very common subcase of invalid input nodes
+        expect(function() {
+          new Builder(new plugins.MergePlugin([undefined], { annotation: 'some annotation' }))
+        }).to.throw(Builder.InvalidNodeError, /Expected Broccoli node, got undefined\nused as input node to MergePlugin \(some annotation\)\n-~- created here: -~-/)
+      })
+
+      it('catches .read/.rebuild-based root nodes', function() {
+        expect(function() {
+          new Builder(readBasedNode)
+        }).to.throw(Builder.InvalidNodeError, /\.read\/\.rebuild API[^\n]*"an old node" as output node/)
+      })
+
+      it('catches .read/.rebuild-based input nodes', function() {
+        expect(function() {
+          new Builder(new plugins.MergePlugin([readBasedNode], { annotation: 'some annotation' }))
+        }).to.throw(Builder.InvalidNodeError, /\.read\/\.rebuild API[^\n]*"an old node"\nused as input node to MergePlugin \(some annotation\)\n-~- created here: -~-/)
+      })
+    })
+  })
+
+  describe('temporary directories', function() {
+    beforeEach(function() {
+      rimraf.sync('test/tmp')
+      fs.mkdirSync('test/tmp')
+    })
+
+    after(function() {
+      rimraf.sync('test/tmp')
+    })
+
+    function hasBroccoliTmpDir(baseDir) {
+      var entries = fs.readdirSync(baseDir)
+      for (var i = 0; i < entries.length; i++) {
+        if (/^broccoli-/.test(entries[i])) {
+          return true
+        }
+      }
+      return false
     }
 
-    var builder = new Builder(parent)
-    return builder.build().then(function(hash) {
-      expect(hash.directory).to.equal('parentTreeDir')
-      var parentBroccoliNode = hash.graph
-      expect(parentBroccoliNode.directory).to.equal('parentTreeDir')
-      expect(parentBroccoliNode.tree).to.equal(parent)
-      expect(parentBroccoliNode.subtrees.length).to.equal(2)
-      var childBroccoliNode = parentBroccoliNode.subtrees[0]
-      expect(childBroccoliNode.directory).to.equal('childTreeDir')
-      expect(childBroccoliNode.tree).to.equal(child)
-      expect(childBroccoliNode.subtrees.length).to.equal(1)
-      var sharedBroccoliNode = childBroccoliNode.subtrees[0]
-      expect(sharedBroccoliNode.subtrees.length).to.equal(1)      
-      var leafBroccoliNode = sharedBroccoliNode.subtrees[0]
-      expect(leafBroccoliNode.directory).to.equal('srcDir')
-      expect(leafBroccoliNode.tree).to.equal('srcDir')
-      expect(leafBroccoliNode.subtrees.length).to.equal(0)
+    it('creates temporary directory in os.tmpdir() by default', function() {
+      builder = new Builder(new plugins.VeggiesPlugin)
+      // This can have false positives from other Broccoli instances, but it's
+      // better than nothing, and better than trying to be sophisticated
+      expect(hasBroccoliTmpDir(os.tmpdir())).to.be.true
     })
 
-    var json = heimdall.toJSON()
+    it('creates temporary directory in directory given by tmpdir options', function() {
+      builder = new Builder(new plugins.VeggiesPlugin, { tmpdir: 'test/tmp' })
+      expect(hasBroccoliTmpDir('test/tmp')).to.be.true
+    })
 
-    expect(json.nodes.length).to.equal(6)
+    it('removes temporary directory when .cleanup() is called', function() {
+      builder = new Builder(new plugins.VeggiesPlugin, { tmpdir: 'test/tmp' })
+      expect(hasBroccoliTmpDir('test/tmp')).to.be.true
+      builder.cleanup()
+      builder = null
+      expect(hasBroccoliTmpDir('test/tmp')).to.be.false
+    })
 
-    var parentNode = json.nodes[1]
-    timeEqual(parentNode.stats.time.self, 30e6)
-
-    var childNode = json.nodes[2]
-    timeEqual(childNode.stats.time.self, 20e6)
-
-    var leafNode = json.nodes[3]
-    timeEqual(leafNode.stats.time.self, 0)
-
-    for (var i=0; i<json.nodes.length; ++i) {
-      delete json.nodes[i].stats.time.self
-    }
-    
-    expect(json).to.deep.equal({
-      nodes: [{
-        _id: 0,
-        id: {
-          name: 'heimdall',
-        },
-        stats: {
-          own: {},
-          time: {},
-        },
-        children: [1],
-      }, {
-        _id: 1,
-        id: {
-          name: 'parent',
-          broccoliNode: true,
-          broccoliId: 0,
-          broccoliCachedNode: false,
-          broccoliPluginName: undefined
-        },
-        stats: {
-          own: {},
-          time: {},
-        },
-        children: [2, 5],
-      }, {
-        _id: 2,
-        id: {
-          name: 'child',
-          broccoliNode: true,
-          broccoliId: 1,
-          broccoliCachedNode: false,
-          broccoliPluginName: undefined
-        },
-        stats: {
-          own: {},
-          time: {},
-        },
-        children: [3],
-      }, {
-        _id: 3,
-        id: {
-          name: 'shared',
-          broccoliNode: true,
-          broccoliId: 2,
-          broccoliCachedNode: false,
-          broccoliPluginName: undefined
-        },
-        stats: {
-          own: {},
-          time: {},
-        },
-        children: [4],
-      }, {
-        _id: 4,
-        id: {
-          name: 'srcDir',
-          broccoliNode: true,
-          broccoliId: 3,
-          broccoliCachedNode: false,
-          broccoliPluginName: undefined
-        },
-        stats: {
-          own: {},
-          time: {},
-        },
-        children: [],
-      }, {
-        _id: 5,
-        id: {
-          name: 'shared',
-          broccoliNode: true,
-          broccoliId: 2,
-          broccoliCachedNode: true,
-          broccoliPluginName: undefined
-        },
-        stats: {
-          own: {},
-          time: {},
-        },
-        children: [],
+    describe('failing node setup', function() {
+      // Failing node setup is rare, but it could happen if a plugin fails to
+      // create some compiler instance
+      FailingSetupPlugin.prototype = Object.create(Plugin.prototype)
+      FailingSetupPlugin.prototype.constructor = FailingSetupPlugin
+      function FailingSetupPlugin(errorObject) {
+        Plugin.call(this, [])
+        this.errorObject = errorObject
+      }
+      FailingSetupPlugin.prototype.getCallbackObject = function() {
+        throw this.errorObject
       }
 
-      ],
+      it('reports failing node and instantiation stack, and cleans up temporary directory', function() {
+        var node = new FailingSetupPlugin(new Error('foo error'))
+        expect(function() {
+          new Builder(node, { tmpdir: 'test/tmp' })
+        }).to.throw(Builder.NodeSetupError, /foo error\s+at FailingSetupPlugin\n-~- created here: -~-/)
+        expect(hasBroccoliTmpDir('test/tmp')).to.be.false
+      })
+
+      it('supports string errors, and cleans up temporary directory', function() {
+        var node = new FailingSetupPlugin('bar error')
+        expect(function() {
+          new Builder(node, { tmpdir: 'test/tmp' })
+        }).to.throw(Builder.NodeSetupError, /bar error\s+at FailingSetupPlugin\n-~- created here: -~-/)
+        expect(hasBroccoliTmpDir('test/tmp')).to.be.false
+      })
     })
   })
 
-  it('string tree callback', function() {
-    var builder = new Builder('fooDir')
-    var callbackCalled = false
-    return builder.build(function willReadStringTree(dir) {
-      expect(dir).to.equal('fooDir')
-      callbackCalled = true
-    }).then(function() {
-      expect(callbackCalled).to.be.ok
+  describe('failing node build', function() {
+    multidepPackages['broccoli-plugin'].forEachVersion(function(version, Plugin) {
+      var plugins = makePlugins(Plugin)
+
+      describe('broccoli-plugin ' + version, function() {
+        it('rethrows as rich BuildError', function() {
+          var originalError = new Error('whoops')
+          originalError.file = 'somefile.js'
+          originalError.treeDir = '/some/dir'
+          originalError.line = 42
+          originalError.column = 3
+          originalError.randomProperty = 'is ignored'
+
+          var node = new plugins.FailingPlugin(originalError, { annotation: 'annotated' })
+          // Wrapping in MergePlugin shouldn't make a difference. This way we
+          // test that we don't have multiple catch clauses applying, wrapping
+          // the error repeatedly
+          node = new plugins.MergePlugin([node])
+          builder = new Builder(node)
+
+          return builder.build()
+            .then(function() {
+              throw new Error('Expected an error')
+            }, function(err) {
+              expect(err).to.be.an.instanceof(Builder.BuildError)
+              expect(err.stack).to.equal(originalError.stack, 'preserves original stack')
+
+              expect(err.message).to.match(/somefile.js:42:4: whoops\s+in \/some\/dir\s+at FailingPlugin \(annotated\)/)
+              expect(err.message).not.to.match(/created here/, 'suppresses instantiation stack when .file is supplied')
+
+              expect(err.broccoliPayload.originalError).to.equal(originalError)
+
+              // Reports offending node
+              expect(err.broccoliPayload.nodeId).to.equal(0)
+              expect(err.broccoliPayload.nodeLabel).to.equal('FailingPlugin (annotated)')
+              expect(err.broccoliPayload.nodeName).to.equal('FailingPlugin')
+              expect(err.broccoliPayload.nodeAnnotation).to.equal('annotated')
+              expect(err.broccoliPayload.instantiationStack).to.be.a('string')
+
+              // Passes on special properties
+              expect(err.broccoliPayload.location).to.deep.equal({
+                file: 'somefile.js',
+                treeDir: '/some/dir',
+                line: 42,
+                column: 3
+              })
+              expect(err.broccoliPayload).not.to.have.property('randomProperty')
+            })
+        })
+
+        it('reports the instantiationStack when no err.file is given', function() {
+          var originalError = new Error('whoops')
+
+          builder = new Builder(new plugins.FailingPlugin(originalError))
+          return expect(builder.build()).to.be.rejectedWith(Builder.BuildError,
+            /whoops\s+at FailingPlugin\n-~- created here: -~-/)
+        })
+
+        it('handles string errors', function() {
+          builder = new Builder(new plugins.FailingPlugin('string exception'))
+          return expect(builder.build()).to.be.rejectedWith(Builder.BuildError, /string exception/)
+        })
+
+        it('handles undefined errors', function() {
+          // Apparently this is a thing.
+          builder = new Builder(new plugins.FailingPlugin(undefined))
+          return expect(builder.build()).to.be.rejectedWith(Builder.BuildError, /undefined/)
+        })
+      })
     })
   })
 
-  it('start/stop events', function (done) {
-    // Can be removed in 1.0.0
-    var builder = new Builder('fooDir')
-    var startWasCalled = 0;
-    var stopWasCalled = 0;
-    builder.on('start', function() {
-      startWasCalled++;
-    });
+  describe('event handling', function() {
+    var events
 
-    builder.on('end', function() {
-      stopWasCalled++;
-    });
+    function setupEventHandlers() {
+      events = []
+      builder.on('beginBuild', function() { events.push('beginBuild') })
+      builder.on('endBuild', function() { events.push('endBuild') })
+      builder.on('beginNode', function(nw) { events.push('beginNode:' + nw.id) })
+      builder.on('endNode', function(nw) { events.push('endNode:' + nw.id) })
+    }
 
-    expect(startWasCalled).to.equal(0);
-    expect(stopWasCalled).to.equal(0);
+    it('triggers RSVP events', function() {
+      builder = new Builder(new plugins.MergePlugin([new plugins.VeggiesPlugin, 'test/fixtures/basic']))
+      setupEventHandlers()
+      return builder.build()
+        .then(function() {
+          expect(events).to.deep.equal([
+            'beginBuild',
+            'beginNode:0',
+            'endNode:0',
+            'beginNode:1',
+            'endNode:1',
+            'beginNode:2',
+            'endNode:2',
+            'endBuild'
+          ])
+        })
+    })
 
-    builder.build(function willReadStringTree (dir) {
-      expect(startWasCalled).to.equal(1);
-      expect(stopWasCalled).to.equal(0);
-      expect(dir).to.equal('fooDir')
-    }).finally(function() {
-      expect(startWasCalled).to.equal(1);
-      expect(stopWasCalled).to.equal(1);
-      done();
+    it('triggers matching endNode event when a node fails to build', function() {
+      builder = new Builder(new plugins.MergePlugin([new plugins.FailingPlugin(new Error('whoops'))]))
+      setupEventHandlers()
+      return expect(builder.build()).to.be.rejected
+        .then(function() {
+          expect(events).to.deep.equal([
+            'beginBuild',
+            'beginNode:0',
+            'endNode:0',
+            'endBuild'
+          ])
+        })
+    })
+  })
+
+  describe('node wrappers', function() {
+    var watchedSourceNw, unwatchedSourceNw, transformNw
+
+    beforeEach(function() {
+      var watchedSourceNode = new broccoliSource.WatchedDir('test/fixtures/basic')
+      var unwatchedSourceNode = new broccoliSource.UnwatchedDir('test/fixtures/basic')
+      var transformNode = new plugins.MergePlugin([watchedSourceNode, unwatchedSourceNode], { overwrite: true })
+      builder = new Builder(transformNode)
+      watchedSourceNw = builder.nodeWrappers[0]
+      unwatchedSourceNw = builder.nodeWrappers[1]
+      transformNw = builder.nodeWrappers[2]
+    })
+
+    it('has .toString value useful for debugging', function() {
+      expect(watchedSourceNw + '').to.equal('[NodeWrapper:0 test/fixtures/basic]')
+      expect(unwatchedSourceNw + '').to.equal('[NodeWrapper:1 test/fixtures/basic (unwatched)]')
+      expect(transformNw + '').to.match(/\[NodeWrapper:2 MergePlugin inputNodeWrappers:\[0,1\] at .+\]/)
+
+      // Reports timing after first build
+      expect(transformNw + '').not.to.match(/\([0-9]+ ms\)/)
+      return builder.build().then(function() {
+        expect(transformNw + '').to.match(/\([0-9]+ ms\)/)
+      })
+    })
+
+    it('has .label property', function() {
+      var node0 = new broccoliSource.WatchedDir('test/fixtures/basic')
+      var node1 = new broccoliSource.WatchedDir('test/fixtures/basic', { annotation: 'some text' })
+      var node2 = new plugins.MergePlugin([node0, node1])
+      var node3 = new plugins.MergePlugin([node2], { annotation: 'some text' })
+      builder = new Builder(node3)
+      expect(builder.nodeWrappers[0].label).to.equal('WatchedDir (test/fixtures/basic)')
+      expect(builder.nodeWrappers[1].label).to.equal('WatchedDir (test/fixtures/basic; some text)')
+      expect(builder.nodeWrappers[2].label).to.equal('MergePlugin')
+      expect(builder.nodeWrappers[3].label).to.equal('MergePlugin (some text)')
+    })
+
+    it('has .toJSON representation useful for exporting for visualization', function() {
+      expect(watchedSourceNw.toJSON()).to.deep.equal({
+        id: 0,
+        nodeInfo: {
+          nodeType: 'source',
+          sourceDirectory: 'test/fixtures/basic',
+          watched: true,
+          name: 'WatchedDir',
+          annotation: null
+        },
+        label: 'WatchedDir (test/fixtures/basic)',
+        inputNodeWrappers: [],
+        cachePath: null,
+        outputPath: 'test/fixtures/basic',
+        buildState: null
+      })
+
+      expect(transformNw.toJSON().buildState).to.be.null
+      return builder.build().then(function() {
+        var transformNwJSON = transformNw.toJSON()
+
+        // Fuzzy matches first
+        expect(transformNwJSON.cachePath).to.be.a('string')
+        expect(transformNwJSON.outputPath).to.be.a('string')
+        transformNwJSON.cachePath = '/some/path'
+        transformNwJSON.outputPath = '/some/path'
+        expect(transformNwJSON.buildState.selfTime).to.be.a('number')
+        expect(transformNwJSON.buildState.totalTime).to.be.a('number')
+        transformNwJSON.buildState.selfTime = 1
+        transformNwJSON.buildState.totalTime = 1
+
+        expect(transformNwJSON).to.deep.equal({
+          id: 2,
+          nodeInfo: {
+            nodeType: 'transform',
+            name: 'MergePlugin',
+            annotation: null,
+            persistentOutput: false
+          },
+          buildState: {
+            selfTime: 1,
+            totalTime: 1
+          },
+          label: 'MergePlugin',
+          inputNodeWrappers: [ 0, 1 ],
+          cachePath: '/some/path',
+          outputPath: '/some/path'
+        })
+      })
+    })
+
+    describe('buildState', function() {
+      it('reports node timings', function() {
+        var node1 = new plugins.SleepingPlugin(['test/fixtures/basic'])
+        var node2 = new plugins.SleepingPlugin
+        var outputNode = new plugins.SleepingPlugin([node1, node2])
+        builder = new Builder(outputNode)
+        return builder.build().then(function() {
+          var sourceNw = builder.nodeWrappers[0]
+          var nw1 = builder.nodeWrappers[1]
+          var nw2 = builder.nodeWrappers[2]
+          var outputNw = builder.nodeWrappers[3]
+
+          expect(sourceNw.buildState.selfTime).to.equal(0)
+          expect(sourceNw.buildState.totalTime).to.equal(0)
+
+          expect(nw1.buildState.selfTime).to.be.greaterThan(0)
+          expect(nw1.buildState.totalTime).to.equal(nw1.buildState.selfTime)
+          expect(nw2.buildState.selfTime).to.be.greaterThan(0)
+          expect(nw2.buildState.totalTime).to.equal(nw2.buildState.selfTime)
+
+          expect(outputNw.buildState.selfTime).to.be.greaterThan(0)
+          expect(outputNw.buildState.totalTime).to.equal(
+            // addition order matters here, or rounding errors will occur
+            outputNw.buildState.selfTime + nw1.buildState.selfTime + nw2.buildState.selfTime
+          )
+        })
+      })
     })
   })
 })
-
-describe('getDescription test', function() {
-  function FakeBaseNode() {}
-
-  it('annotation is used', function(done) {
-    var fakeNode = new FakeBaseNode();
-    fakeNode.annotation = 'fakeNode: boo';
-
-    var result = broccoli.getDescription(fakeNode);
-
-    expect(result).to.equal('fakeNode: boo');
-    done();
-  });
-
-  it('description is used', function(done) {
-    var fakeNode = new FakeBaseNode();
-    fakeNode.description = 'fakeNode: boo';
-
-    var result = broccoli.getDescription(fakeNode);
-
-    expect(result).to.equal('fakeNode: boo');
-    done();
-  });
-
-  it('annotation is used over description', function(done) {
-    var fakeNode = new FakeBaseNode();
-    fakeNode.annotation = 'fakeNode: boo';
-    fakeNode.description = 'fakeNode: who';
-
-    var result = broccoli.getDescription(fakeNode);
-
-    expect(result).to.equal('fakeNode: boo');
-    done();
-  });
-
-  it('plugin name is used when no other description is present', function(done) {
-    var fakeNode = new FakeBaseNode();
-
-    var result = broccoli.getDescription(fakeNode);
-
-    expect(result).to.equal('FakeBaseNode');
-    done();
-  });
-
-  it('string trees description is the path itself', function(done) {
-    var fakeNode = 'some/path/here/';
-
-    var result = broccoli.getDescription(fakeNode);
-
-    expect(result).to.equal('some/path/here/');
-    done();
-  });
-});
-
-describe('getPluginName', function() {
-  function FakeBaseNode() {}
-
-  it('it returns constructor name', function(done) {
-    var fakeNode = new FakeBaseNode();
-    var result = broccoli.getPluginName(fakeNode);
-
-    expect(result).to.equal('FakeBaseNode');
-    done();
-  });
-
-  it('returns undefined for string nodes', function(done) {
-    var fakeNode = 'some/path/here/';
-    var result = broccoli.getPluginName(fakeNode);
-
-    expect(result).to.equal(undefined);
-    done();
-  });
-
-  it('returns undefined for POJO nodes', function(done) {
-    var fakeNode = {};
-    var result = broccoli.getPluginName(fakeNode);
-
-    expect(result).to.equal(undefined);
-    done();
-  });
-});

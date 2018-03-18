@@ -3,10 +3,7 @@
   "description": "Fast client-side asset builder",
   "version": "1.0.0-beta.1",
   "author": "Jo Liss <joliss42@gmail.com>",
-  "main": "lib/builder.js",
-  "files": [
-    "lib"
-  ],
+  "main": "lib/index.js",
   "license": "MIT",
   "keywords": [
     "builder",
@@ -45,6 +42,7 @@
     "fixturify": "^0.2.0",
     "mocha": "^2.3.3",
     "mocha-jshint": "^2.2.5",
+    "multidep": "^1.0.1",
     "sinon": "^1.17.1",
     "sinon-chai": "^2.8.0",
     "symlink-or-copy": "^1.0.1"
@@ -53,6 +51,7 @@
     "node": ">= 0.10.0"
   },
   "scripts": {
+    "pretest": "multidep test/multidep.json",
     "test": "mocha"
   }
 }
