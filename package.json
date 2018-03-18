@@ -1,7 +1,7 @@
 {
   "name": "broccoli-builder",
   "description": "Fast client-side asset builder",
-  "version": "0.18.11",
+  "version": "1.0.0-beta.1",
   "author": "Jo Liss <joliss42@gmail.com>",
   "main": "lib/builder.js",
   "files": [
@@ -22,18 +22,32 @@
   },
   "homepage": "https://github.com/ember-cli/broccoli-builder",
   "dependencies": {
+    "broccoli-kitchen-sink-helpers": "^0.2.9",
+    "broccoli-slow-trees": "^2.0.0",
+    "broccoli-source": "^1.1.0",
+    "commander": "^2.5.0",
+    "connect": "^3.3.3",
+    "copy-dereference": "^1.0.0",
+    "findup-sync": "^0.2.1",
+    "handlebars": "^3.0.1",
     "heimdalljs": "^0.2.0",
-    "promise-map-series": "^0.2.1",
-    "quick-temp": "^0.1.2",
-    "rimraf": "^2.2.8",
+    "mime": "^1.2.11",
+    "rimraf": "^2.4.3",
     "rsvp": "^3.0.17",
-    "silent-error": "^1.0.1"
+    "silent-error": "^1.0.1",
+    "tmp": "0.0.28",
+    "underscore.string": "^3.2.2"
   },
   "devDependencies": {
+    "broccoli-plugin": "^1.2.0",
     "chai": "^3.3.0",
     "chai-as-promised": "^5.1.0",
+    "fixturify": "^0.2.0",
     "mocha": "^2.3.3",
-    "mocha-jshint": "^2.2.3"
+    "mocha-jshint": "^2.2.5",
+    "sinon": "^1.17.1",
+    "sinon-chai": "^2.8.0",
+    "symlink-or-copy": "^1.0.1"
   },
   "engines": {
     "node": ">= 0.10.0"
