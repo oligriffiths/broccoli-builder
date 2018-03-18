@@ -19,6 +19,11 @@
   },
   "homepage": "https://github.com/ember-cli/broccoli",
   "dependencies": {
+    "broccoli-kitchen-sink-helpers": "^0.2.5",
+    "broccoli-slow-trees": "^1.0.0",
+    "commander": "^2.5.0",
+    "connect": "^3.3.3",
+    "copy-dereference": "^1.0.0",
     "findup-sync": "^0.2.1",
     "handlebars": "^4.0.4",
     "heimdalljs": "^0.2.0",
