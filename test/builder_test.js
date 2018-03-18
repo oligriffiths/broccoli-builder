@@ -73,7 +73,7 @@ describe('Builder', function() {
         return builder.build().then(function(hash) {
           expect(hash.directory).to.equal('foo')
           builder.build().catch(function(err) {
-            expect(err.message).to.equal('bar')
+            expect(err.message).to.equal('The Broccoli Plugin: [object Object] failed with:')
             return builder.cleanup()
           })
           .then(function() {
@@ -110,7 +110,7 @@ describe('Builder', function() {
       // the actual results of process.hrtime() are not
       // reliable
       if (process.env.CI !== 'true') {
-        expect(a).to.be.within(b - 5e6, b + 5e6)
+        expect(a).to.be.within(b - 5e7, b + 5e7)
       }
     }
 
