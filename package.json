@@ -1,7 +1,7 @@
 {
   "name": "broccoli-builder",
   "description": "Fast client-side asset builder",
-  "version": "0.18.0",
+  "version": "0.18.1",
   "author": "Jo Liss <joliss42@gmail.com>",
   "main": "lib/builder.js",
   "files": [
@@ -26,7 +26,8 @@
     "promise-map-series": "^0.2.1",
     "quick-temp": "^0.1.2",
     "rimraf": "^2.2.8",
-    "rsvp": "^3.0.17"
+    "rsvp": "^3.0.17",
+    "silent-error": "^1.0.1"
   },
   "devDependencies": {
     "chai": "^3.3.0",

@@ -78,10 +78,82 @@ describe('Builder', function() {
             expect(err.message).to.equal('The Broccoli Plugin: [object Object] failed with:')
             return builder.cleanup()
           })
-          .then(function() {
+          .finally(function() {
             expect(tree.cleanupCount).to.equal(1)
             expect(subtree1.cleanupCount).to.equal(1)
             expect(subtree2.cleanupCount).to.equal(1)
+          });
+        })
+      })
+
+      it('cannot build already cleanedup build', function (done) {
+        var tree = countingTree(function (readTree) {
+          // Interesting edge case: Read subtree1 on the first read, subtree2 on
+          // the second
+          return readTree(this.readCount === 1 ? subtree1 : subtree2)
+        })
+        var subtree1 = countingTree(function (readTree) { return 'foo' })
+        var subtree2 = countingTree(function (readTree) { throw new Error('bar') })
+        var builder = new Builder(tree)
+        builder.cleanup();
+        builder.build().then(function (hash) {
+          expect(false).to.equal(true, 'should not succeed');
+          done();
+        }).catch(function(e) {
+          expect(tree.cleanupCount).to.equal(0)
+          expect(subtree1.cleanupCount).to.equal(0)
+          expect(subtree2.cleanupCount).to.equal(0)
+          expect(e.message).to.equal('cannot build this builder, as it has been previously canceled');;
+          done();
+        });
+      })
+
+      it('a build step run once the build is cancelled will not wrong, and the build will fail', function (done) {
+        var tree = countingTree(function (readTree) {
+          // Interesting edge case: Read subtree1 on the first read, subtree2 on
+          // the second
+          return readTree(this.readCount === 1 ? subtree1 : subtree2)
+        })
+        var subtree1 = countingTree(function (readTree) { return 'foo' })
+        var subtree2 = countingTree(function (readTree) { throw new Error('bar') })
+        var builder = new Builder(tree)
+        var build = builder.build()
+        builder.cleanup();
+        build.then(function (hash) {
+          expect(false).to.equal(true, 'should not succeed');
+          done();
+        }).catch(function(reason) {
+          expect(tree.cleanupCount).to.equal(0)
+          expect(subtree1.cleanupCount).to.equal(0)
+          expect(subtree2.cleanupCount).to.equal(0)
+          expect(reason.message).to.equal('Build Canceled');
+          expect(reason.isSilentError).to.equal(true);;
+          done();
+        });
+      })
+
+      it('is calls trees so far read (after one step)', function (done) {
+        var cleaner;
+        var tree = countingTree(function (readTree) {
+          // Interesting edge case: Read subtree1 on the first read, subtree2 on
+          // the second
+          cleaner = builder.cleanup();
+          return readTree(subtree1);
+        })
+        var subtree1 = countingTree(function (readTree) {
+          return 'foo'
+        })
+        var builder = new Builder(tree)
+
+        builder.build().then(function () {
+          expect(true).to.equal(false, 'should not succeed')
+          done();
+        }).catch(function(reason) {
+          expect(reason.message).to.equal('Build Canceled')
+          return cleaner.then(function() {
+            expect(tree.cleanupCount).to.equal(1)
+            expect(subtree1.cleanupCount).to.equal(0) // never read the second, so we wont clean it up
+            done();
           })
         })
       })
