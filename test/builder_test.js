@@ -149,7 +149,8 @@ describe('Builder', function() {
           expect(true).to.equal(false, 'should not succeed')
           done();
         }).catch(function(reason) {
-          expect(reason.message).to.equal('Build Canceled')
+          expect(reason.message).to.contain('Build Canceled: Broccoli Builder ran into an error with')
+
           return cleaner.then(function() {
             expect(tree.cleanupCount).to.equal(1)
             expect(subtree1.cleanupCount).to.equal(0) // never read the second, so we wont clean it up
