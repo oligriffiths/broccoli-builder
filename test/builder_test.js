@@ -3,25 +3,27 @@ var Builder = broccoli.Builder
 var chai = require('chai'), expect = chai.expect
 var chaiAsPromised = require('chai-as-promised'); chai.use(chaiAsPromised)
 var RSVP = require('rsvp')
+var heimdall = require('heimdalljs')
 
 RSVP.on('error', function(error) {
   throw error
 })
 
-function countingTree(readFn) {
+function countingTree (readFn, description) {
   return {
-    read: function(readTree) {
+    read: function (readTree) {
       this.readCount++
       return readFn.call(this, readTree)
     },
     readCount: 0,
-    cleanup: function() {
-      var self = this;
+    description: description,
+    cleanup: function () {
+      var self = this
 
       return RSVP.resolve()
         .then(function() {
           self.cleanupCount++
-        });
+        })
     },
     cleanupCount: 0
   }
@@ -93,7 +95,7 @@ describe('Builder', function() {
           setTimeout(function() { resolve('parentTreeDir') }, 30)
         })
       })
-    })
+    }, 'parent')
 
     var child = countingTree(function(readTree) {
       return readTree('srcDir').then(function(dir) {
@@ -101,7 +103,7 @@ describe('Builder', function() {
           setTimeout(function() { resolve('childTreeDir') }, 20)
         })
       })
-    })
+    }, 'child')
 
     var timeEqual = function(a, b) {
       expect(a).to.be.a('number')
@@ -120,21 +122,79 @@ describe('Builder', function() {
       var parentNode = hash.graph
       expect(parentNode.directory).to.equal('parentTreeDir')
       expect(parentNode.tree).to.equal(parent)
-      timeEqual(parentNode.totalTime, 50e6)
-      timeEqual(parentNode.selfTime, 30e6)
       expect(parentNode.subtrees.length).to.equal(1)
       var childNode = parentNode.subtrees[0]
       expect(childNode.directory).to.equal('childTreeDir')
       expect(childNode.tree).to.equal(child)
-      timeEqual(childNode.totalTime, 20e6)
-      timeEqual(childNode.selfTime, 20e6)
       expect(childNode.subtrees.length).to.equal(1)
       var leafNode = childNode.subtrees[0]
       expect(leafNode.directory).to.equal('srcDir')
       expect(leafNode.tree).to.equal('srcDir')
-      expect(leafNode.totalTime).to.equal(0)
-      expect(leafNode.selfTime).to.equal(0)
       expect(leafNode.subtrees.length).to.equal(0)
+    })
+
+    var json = heimdall.toJSON()
+
+    expect(json.nodes.length).to.equal(4)
+
+    var parentNode = json.nodes[1]
+    timeEqual(parentNode.stats.time.self, 30e6)
+
+    var childNode = json.nodes[2]
+    timeEqual(childNode.stats.time.self, 20e6)
+
+    var leafNode = json.nodes[3]
+    timeEqual(leafNode.stats.time.self, 0)
+
+    for (var i=0; i<json.nodes.length; ++i) {
+      delete json.nodes[i].stats.time.self
+    }
+    
+    expect(json).to.deep.equal(json, {
+      nodes: [{
+        _id: 0,
+        id: {
+          name: 'heimdall',
+        },
+        stats: {
+          own: {},
+          time: {},
+        },
+        children: [1],
+      }, {
+        _id: 1,
+        id: {
+          name: 'parent',
+          broccoliNode: true,
+        },
+        stats: {
+          own: {},
+          time: {},
+        },
+        children: [2],
+      }, {
+        _id: 2,
+        id: {
+          name: 'child',
+          broccoliNode: true,
+        },
+        stats: {
+          own: {},
+          time: {},
+        },
+        children: [3],
+      }, {
+        _id: 3,
+        id: {
+          name: 'srcDir',
+          broccoliNode: true,
+        },
+        stats: {
+          own: {},
+          time: {},
+        },
+        children: [],
+      }],
     })
   })
 
