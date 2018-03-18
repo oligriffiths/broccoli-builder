@@ -1,4 +1,40 @@
-# master
+# 0.18.10
+
+* Ensure good error feedback when a `SilentError` is thrown.
+*
+# 0.18.9
+
+* Add line and column number details to the error payload.
+
+# 0.18.4
+
+* Use `node.annotation` for instrumentation if present.
+* Add `broccoliPluginName` to heimdall node information.
+
+# 0.18.3
+
+* add broccoliId to heimdal node id
+* Ensure we also instrument the existence of cached nodes
+
+# 0.18.1
+
+* Add support for mid-build cleanup: https://github.com/ember-cli/broccoli-builder/pull/2
+
+# 0.18.0
+
+* Extract `broccoli-builder` from `broccoli`
+
+# 0.17.0
+
+* use structured logging via heimdalljs
+
+# 0.16.10
+
+* add instantion stack to node.toJSON to improve broccoli-viz output
+
+# 0.16.9
+
+* Update handlebars dependency
 
 # 0.16.8
 
